@@ -1,0 +1,112 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nitrotpm-verifier"
+version = "1.0.0"
+description = "AWS NitroTPM attestation verifier using pure Python cryptographic primitives (tlslite-ng) and certvalidator"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Yelyzaveta Dymchenko", email = "elizavetadymchenko20@gmail.com"}
+]
+keywords = ["aws", "nitrotpm", "attestation", "cose", "cbor", "tlslite-ng", "ecdsa", "cryptography"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Software Development :: Libraries",
+]
+
+dependencies = [
+    "cbor2>=5.4.6,<6.0",
+    "tlslite-ng>=0.8.0,<1.0",
+    "ecdsa>=0.18.0,<1.0",
+    "certvalidator>=0.11.0,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "black>=23.0",
+    "flake8>=6.0",
+    "mypy>=1.0",
+    "isort>=5.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/directionallyai/nitrotpm-verifier"
+Repository = "https://github.com/directionallyai/nitrotpm-verifier.git"
+Documentation = "https://github.com/directionallyai/nitrotpm-verifier#readme"
+"Bug Tracker" = "https://github.com/directionallyai/nitrotpm-verifier/issues"
+
+[tool.setuptools]
+py-modules = [
+    "cose",
+    "payload",
+    "certificates",
+    "signature",
+    "verifier",
+    "errors",
+]
+
+[tool.black]
+line-length = 88
+target-version = ["py38", "py39", "py310", "py311", "py312"]
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+multi_line_mode = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+ensure_newline_before_comments = true
+line_length = 88
+skip_glob = ["*/migrations/*"]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "--cov=nitrotpm_verifier --cov-report=term-missing"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
