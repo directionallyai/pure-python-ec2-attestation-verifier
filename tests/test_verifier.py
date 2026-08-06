@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from verifier import verify_nitrotpm_attestation
 from payload import NitroTPMPayload
+from cose import CoseSign1, MAX_DOCUMENT_SIZE
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "aws_nitrotpm_doc.bin"
 
@@ -127,6 +128,81 @@ def test_wrong_pcr_value_is_reported(document):
 
     assert result.pcr_matches[0] is False
     assert result.is_valid is False
+
+
+def test_oversized_document_is_rejected_before_cbor_decoding():
+    oversized = b"\x00" * (MAX_DOCUMENT_SIZE + 1)
+
+    with pytest.raises(ValueError, match="Document too large"):
+        CoseSign1.parse(oversized)
+
+
+def test_oversized_document_fails_verification(document):
+    # Pad a structurally-valid-looking document past the size cap; it must
+    # be rejected without ever reaching the CBOR decoder.
+    padded = document + b"\x00" * MAX_DOCUMENT_SIZE
+
+    result = verify_nitrotpm_attestation(padded)
+
+    assert result.payload_valid is False
+    assert any("Document too large" in e for e in result.errors)
+    assert result.is_valid is False
+
+
+class TestPayloadOptionalFieldSizeBounds:
+    """AWS's CDDL defines nonce, user_data, and public_key as sharing the
+    `user_data = bytes .size (0..1024)` type; certs are bounded to 1024
+    bytes each."""
+
+    @staticmethod
+    def _base_payload() -> NitroTPMPayload:
+        p = NitroTPMPayload()
+        p.module_id = "i-test"
+        p.timestamp = 1
+        p.digest = "SHA384"
+        p.certificate = b"\x00"
+        p.cabundle = [b"\x00"]
+        return p
+
+    def test_nonce_at_1024_bytes_is_accepted(self):
+        p = self._base_payload()
+        p.nonce = b"\x00" * 1024
+        p.validate()
+
+    def test_nonce_over_1024_bytes_is_rejected(self):
+        p = self._base_payload()
+        p.nonce = b"\x00" * 1025
+        with pytest.raises(ValueError, match="nonce size"):
+            p.validate()
+
+    def test_user_data_at_1024_bytes_is_accepted(self):
+        p = self._base_payload()
+        p.user_data = b"\x00" * 1024
+        p.validate()
+
+    def test_user_data_over_1024_bytes_is_rejected(self):
+        p = self._base_payload()
+        p.user_data = b"\x00" * 1025
+        with pytest.raises(ValueError, match="user_data size"):
+            p.validate()
+
+    def test_public_key_over_1024_bytes_is_rejected(self):
+        p = self._base_payload()
+        p.public_key = b"\x00" * 1025
+        with pytest.raises(ValueError, match="public_key size"):
+            p.validate()
+
+    def test_certificate_over_1024_bytes_is_rejected(self):
+        p = self._base_payload()
+        p.certificate = b"\x00" * 1025
+        with pytest.raises(ValueError, match="certificate size"):
+            p.validate()
+
+    def test_cabundle_entry_over_1024_bytes_is_rejected(self):
+        p = self._base_payload()
+        p.cabundle = [b"\x00" * 1025]
+        with pytest.raises(ValueError, match=r"cabundle\[0\] size"):
+            p.validate()
 
 
 class TestPayloadPcrIndexBounds:

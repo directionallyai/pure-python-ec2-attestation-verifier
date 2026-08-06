@@ -137,15 +137,30 @@ class NitroTPMPayload:
 
         if not self.certificate:
             raise ValueError("certificate cannot be empty")
+        if len(self.certificate) > 1024:
+            raise ValueError(
+                f"certificate size {len(self.certificate)} exceeds limit of 1024"
+            )
 
         if not self.cabundle:
             raise ValueError("cabundle cannot be empty")
+        for idx, cert_bytes in enumerate(self.cabundle):
+            if len(cert_bytes) > 1024:
+                raise ValueError(
+                    f"cabundle[{idx}] size {len(cert_bytes)} exceeds limit of 1024"
+                )
 
-        # Validate optional field sizes (AWS documented limits)
-        if self.nonce and len(self.nonce) > 64:
-            raise ValueError(f"nonce size {len(self.nonce)} exceeds limit of 64")
-
-        if self.user_data and len(self.user_data) > 512:
+        # Validate optional field sizes. Per AWS's CDDL, public_key, user_data,
+        # and nonce all share the `user_data = bytes .size (0..1024)` type.
+        if self.public_key and len(self.public_key) > 1024:
             raise ValueError(
-                f"user_data size {len(self.user_data)} exceeds limit of 512"
+                f"public_key size {len(self.public_key)} exceeds limit of 1024"
+            )
+
+        if self.nonce and len(self.nonce) > 1024:
+            raise ValueError(f"nonce size {len(self.nonce)} exceeds limit of 1024")
+
+        if self.user_data and len(self.user_data) > 1024:
+            raise ValueError(
+                f"user_data size {len(self.user_data)} exceeds limit of 1024"
             )

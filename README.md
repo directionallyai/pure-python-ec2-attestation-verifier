@@ -16,6 +16,7 @@ Pure Python verifier for AWS EC2 **NitroTPM Attestation Documents** using pure P
 - ✅ ECDSA P-384 signature verification (ES384)
 - ✅ Attestation payload parsing (PCRs, timestamps, nonce)
 - ✅ Optional policy enforcement (PCR, nonce, freshness checks)
+- ✅ Document size cap to reject oversized input before CBOR decoding
 - ✅ Pure Python crypto - no OpenSSL or C extensions
 
 ## Installation
