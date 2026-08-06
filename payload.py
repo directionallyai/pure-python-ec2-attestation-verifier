@@ -128,7 +128,7 @@ class NitroTPMPayload:
 
         # Validate PCRs
         for idx, value in self.nitrotpm_pcrs.items():
-            if idx > 23:
+            if idx < 0 or idx > 31:
                 raise ValueError(f"Invalid PCR index: {idx}")
             if len(value) != 48:
                 raise ValueError(
