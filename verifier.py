@@ -28,6 +28,24 @@ class VerificationResult:
     timestamp_fresh: Optional[bool] = None
     errors: list = field(default_factory=list)
 
+    @property
+    def is_valid(self) -> bool:
+        """True only if every check that ran passed.
+
+        Cryptographic checks (payload/chain/signature) must all be True.
+        Optional policy checks (nonce/PCRs/freshness) must not have failed
+        if they ran at all.
+        """
+        if not (self.payload_valid and self.certificate_chain_valid and self.cose_signature_valid):
+            return False
+        if self.nonce_match is False:
+            return False
+        if any(match is False for match in self.pcr_matches.values()):
+            return False
+        if self.timestamp_fresh is False:
+            return False
+        return True
+
 
 class NitroTPMVerifier:
     """NitroTPM attestation document verifier."""
@@ -111,6 +129,7 @@ class NitroTPMVerifier:
             result.cose_signature_valid = True
         except Exception as e:
             result.errors.append(f"Signature verification failed: {e}")
+            return result  # STOP: payload is unauthenticated if the signature is invalid
 
         # Step 6: Check nonce
         if self.expected_nonce:

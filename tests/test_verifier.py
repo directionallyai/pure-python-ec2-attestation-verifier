@@ -38,6 +38,7 @@ def test_valid_document_verifies_successfully(document):
     assert result.certificate_chain_valid is True
     assert result.cose_signature_valid is True
     assert result.errors == []
+    assert result.is_valid is True
 
 
 def test_expired_verification_time_fails_chain_validation(document):
@@ -58,6 +59,32 @@ def test_tampered_payload_fails_signature_verification(document):
 
     assert result.cose_signature_valid is False
     assert any("Signature verification failed" in e for e in result.errors)
+    assert result.is_valid is False
+
+    # Verification must stop once the signature is known-bad: policy checks
+    # against an unauthenticated payload would be meaningless.
+    assert result.nonce_match is None
+    assert result.pcr_matches == {}
+    assert result.timestamp_fresh is None
+
+
+def test_signature_failure_short_circuits_even_with_matching_policy(document, real_nonce):
+    """A tampered document must not report matching nonce/PCRs even if the
+    attacker-controlled payload happens to carry the real nonce/PCR bytes."""
+    tampered = bytearray(document)
+    tampered[300] ^= 0xFF
+
+    result = verify_nitrotpm_attestation(
+        bytes(tampered),
+        expected_nonce=real_nonce,
+        expected_pcrs={0: b"\x00" * 48},
+        now=VALID_TIME,
+    )
+
+    assert result.cose_signature_valid is False
+    assert result.nonce_match is None
+    assert result.pcr_matches == {}
+    assert result.is_valid is False
 
 
 def test_correct_nonce_matches(document, real_nonce):
@@ -66,6 +93,7 @@ def test_correct_nonce_matches(document, real_nonce):
     )
 
     assert result.nonce_match is True
+    assert result.is_valid is True
 
 
 def test_wrong_nonce_does_not_match(document, real_nonce):
@@ -77,6 +105,7 @@ def test_wrong_nonce_does_not_match(document, real_nonce):
 
     assert result.nonce_match is False
     assert "Nonce mismatch" in result.errors
+    assert result.is_valid is False
 
 
 def test_max_age_rejects_stale_document(document):
@@ -88,6 +117,7 @@ def test_max_age_rejects_stale_document(document):
 
     assert result.timestamp_fresh is False
     assert any("too old" in e for e in result.errors)
+    assert result.is_valid is False
 
 
 def test_wrong_pcr_value_is_reported(document):
@@ -96,6 +126,7 @@ def test_wrong_pcr_value_is_reported(document):
     )
 
     assert result.pcr_matches[0] is False
+    assert result.is_valid is False
 
 
 class TestPayloadPcrIndexBounds:
