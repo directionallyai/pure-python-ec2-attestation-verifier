@@ -35,7 +35,7 @@ dependencies = [
     "cbor2>=5.4.6,<6.0",
     "tlslite-ng>=0.8.0,<1.0",
     "ecdsa>=0.18.0,<1.0",
-    "certvalidator>=0.11.0,<1.0",
+    "asn1crypto>=1.5.0,<2.0",
 ]
 
 [project.optional-dependencies]
@@ -61,7 +61,6 @@ py-modules = [
     "certificates",
     "signature",
     "verifier",
-    "errors",
 ]
 
 [tool.black]
@@ -106,7 +105,7 @@ warn_no_return = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "--cov=nitrotpm_verifier --cov-report=term-missing"
+addopts = "--cov=. --cov-report=term-missing"
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]

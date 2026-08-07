@@ -16,6 +16,7 @@ Pure Python verifier for AWS EC2 **NitroTPM Attestation Documents** using pure P
 - ✅ ECDSA P-384 signature verification (ES384)
 - ✅ Attestation payload parsing (PCRs, timestamps, nonce)
 - ✅ Optional policy enforcement (PCR, nonce, freshness checks)
+- ✅ Document size cap to reject oversized input before CBOR decoding
 - ✅ Pure Python crypto - no OpenSSL or C extensions
 
 ## Installation
@@ -44,7 +45,7 @@ result = verify_nitrotpm_attestation(
 )
 
 # Check results
-if result.cose_signature_valid and result.certificate_chain_valid:
+if result.is_valid:
     print("✓ Attestation is authentic!")
 else:
     print("✗ Verification failed:")
@@ -74,7 +75,15 @@ print(f"Certs: {result.certificate_chain_valid}")
 print(f"Nonce: {result.nonce_match}")
 print(f"PCRs: {result.pcr_matches}")
 print(f"Fresh: {result.timestamp_fresh}")
+print(f"Overall: {result.is_valid}")
 ```
+
+`result.is_valid` is the single field to trust: it is only `True` if the
+cryptographic checks (payload/chain/signature) all passed *and* none of the
+policy checks you asked for (nonce/PCRs/freshness) failed. Note that if the
+COSE signature fails to verify, verification stops immediately — nonce and
+PCR values from an unauthenticated payload are never compared, since an
+attacker who can forge/replay a document controls those bytes too.
 
 ## Architecture
 
@@ -85,7 +94,6 @@ nitrotpm-verifier/
 ├── certificates.py   # X.509 certificate validation
 ├── signature.py      # ECDSA signature verification
 ├── verifier.py       # Main orchestrator
-├── errors.py         # Exception types
 ├── example.py        # Usage example
 └── pyproject.toml    # Dependencies
 ```

@@ -6,6 +6,13 @@ from typing import Dict
 
 COSE_ALG_ES384 = -35
 
+# AWS attestation documents (Nitro Enclaves and NitroTPM) are small,
+# fixed-shape structures (a handful of PCRs plus a short cert chain).
+# Reject anything wildly larger before handing it to the CBOR decoder,
+# so an attacker can't force large allocations/CPU time with an
+# oversized or maliciously nested blob.
+MAX_DOCUMENT_SIZE = 64 * 1024
+
 
 class CoseSign1:
     """COSE_Sign1 structure parser."""
@@ -29,6 +36,12 @@ class CoseSign1:
         Raises:
             ValueError: If parsing fails
         """
+        if len(data) > MAX_DOCUMENT_SIZE:
+            raise ValueError(
+                f"Document too large: {len(data)} bytes exceeds limit of "
+                f"{MAX_DOCUMENT_SIZE}"
+            )
+
         try:
             # Decode CBOR array
             decoder = cbor2.CBORDecoder(BytesIO(data))

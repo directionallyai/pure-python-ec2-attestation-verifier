@@ -27,6 +27,7 @@ print("="*60)
 print(f"✓ Payload valid: {result.payload_valid}")
 print(f"✓ Certificate chain valid: {result.certificate_chain_valid}")
 print(f"✓ COSE signature valid: {result.cose_signature_valid}")
+print(f"✓ Overall valid: {result.is_valid}")
 
 if result.errors:
     print(f"\n✗ Errors ({len(result.errors)}):")

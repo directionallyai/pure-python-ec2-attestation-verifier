@@ -1,17 +1,31 @@
-"""Certificate chain validation for NitroTPM attestation using certvalidator."""
+"""X.509 certificate chain validation for NitroTPM attestation.
+
+Pure Python implementation using asn1crypto (structure parsing only, no
+crypto operations) and tlslite-ng/ecdsa (signature verification). This
+avoids certvalidator/oscrypto, which shell out to the system OpenSSL
+(libcrypto) via ctypes and are not actually pure Python.
+
+Per AWS's NitroTPM attestation document validation guide, revocation
+(CRL/OCSP) checking must be disabled for this chain - the certificates
+are short-lived and there is no revocation infrastructure for them. Key
+usage enforcement (keyCertSign on CAs, digitalSignature on the leaf) is
+not mandated by that guide, but is applied here anyway as a standard
+X.509 hygiene check, borrowed from AWS's sibling Nitro Enclaves
+attestation process documentation.
+"""
 
 import hashlib
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import List, Optional
 
 try:
-    from certvalidator import CertificateValidator
-    from certvalidator.context import ValidationContext
+    from asn1crypto import x509 as asn1_x509
 except ImportError:
-    raise ImportError("certvalidator is required. Install with: pip install certvalidator")
+    raise ImportError("asn1crypto is required. Install with: pip install asn1crypto")
 
 try:
     from tlslite.x509 import X509
+    from tlslite.utils.ecdsakey import ECDSAKey
 except ImportError:
     raise ImportError("tlslite-ng is required. Install with: pip install tlslite-ng")
 
@@ -21,14 +35,15 @@ AWS_NITRO_ROOT_FINGERPRINT = "641A0321A3E244EFE456463195D606317ED7CDCC3C1756E098
 
 
 class CertificateChain:
-    """X.509 certificate chain validator using certvalidator."""
+    """X.509 certificate chain validator (pure Python, no OpenSSL)."""
 
     def __init__(self, leaf_der: bytes, cabundle_der: List[bytes]):
         """Initialize certificate chain.
 
         Args:
             leaf_der: DER-encoded leaf certificate
-            cabundle_der: List of DER-encoded certificates (root to leaf intermediates)
+            cabundle_der: DER-encoded certs, ordered [ROOT, INTERM_1, ..., INTERM_N]
+                          per the AWS attestation document CA bundle convention
 
         Raises:
             ValueError: If certificates are invalid
@@ -40,28 +55,18 @@ class CertificateChain:
 
         self.leaf_der = leaf_der
         self.cabundle_der = cabundle_der
-        self.root_der = cabundle_der[0] if cabundle_der else None
+        self.root_der = cabundle_der[0]
 
-        # Parse certificates using tlslite-ng
+        # Chain, in signing order, closest to trust anchor last:
+        # [leaf, INTERM_N, ..., INTERM_1, ROOT]
+        self.chain_der = [leaf_der] + list(reversed(cabundle_der[1:])) + [self.root_der]
+
         try:
-            self.leaf_cert = self._parse_cert(leaf_der, "leaf")
-            self.root_cert = self._parse_cert(self.root_der, "root") if self.root_der else None
-            self.intermediates = [
-                self._parse_cert(cert_der, f"intermediate[{i}]")
-                for i, cert_der in enumerate(cabundle_der[1:])
+            self.chain = [
+                asn1_x509.Certificate.load(der) for der in self.chain_der
             ]
         except Exception as e:
             raise ValueError(f"Failed to parse certificates: {e}")
-
-    @staticmethod
-    def _parse_cert(cert_der: bytes, label: str) -> X509:
-        """Parse DER-encoded certificate using tlslite-ng."""
-        try:
-            cert = X509()
-            cert.parseBinary(cert_der)
-            return cert
-        except Exception as e:
-            raise ValueError(f"Failed to parse {label} certificate: {e}")
 
     def validate(self, now: Optional[datetime] = None) -> None:
         """Validate certificate chain.
@@ -75,11 +80,12 @@ class CertificateChain:
         if now is None:
             now = datetime.now(timezone.utc)
 
-        # Verify pinned root
         self._verify_root_pinning()
-
-        # Verify certificate chain using certvalidator
-        self._verify_chain_with_certvalidator(now)
+        self._verify_validity_periods(now)
+        self._verify_issuer_subject_linkage()
+        self._verify_basic_constraints_and_path_len()
+        self._verify_key_usage()
+        self._verify_signature_chain()
 
     def _verify_root_pinning(self) -> None:
         """Verify root certificate fingerprint.
@@ -87,9 +93,6 @@ class CertificateChain:
         Raises:
             ValueError: If root fingerprint doesn't match
         """
-        if not self.root_der:
-            raise ValueError("Root certificate missing")
-
         fingerprint = hashlib.sha256(self.root_der).hexdigest().upper()
 
         if fingerprint != AWS_NITRO_ROOT_FINGERPRINT:
@@ -98,54 +101,125 @@ class CertificateChain:
                 f"Expected {AWS_NITRO_ROOT_FINGERPRINT}, got {fingerprint}"
             )
 
-    def _verify_chain_with_certvalidator(self, now: datetime) -> None:
-        """Verify certificate chain using certvalidator.
+    def _verify_validity_periods(self, now: datetime) -> None:
+        """Ensure every certificate in the chain is within its validity period."""
+        for label, cert in zip(self._labels(), self.chain):
+            validity = cert["tbs_certificate"]["validity"]
+            not_before = validity["not_before"].native
+            not_after = validity["not_after"].native
+            if now < not_before or now > not_after:
+                raise ValueError(
+                    f"{label} certificate not valid at {now}: "
+                    f"validity window {not_before} to {not_after}"
+                )
 
-        Args:
-            now: Current time (UTC)
+    def _verify_issuer_subject_linkage(self) -> None:
+        """Ensure each cert's issuer matches the next cert's subject."""
+        for i in range(len(self.chain) - 1):
+            child = self.chain[i]
+            parent = self.chain[i + 1]
+            child_issuer = child["tbs_certificate"]["issuer"].dump()
+            parent_subject = parent["tbs_certificate"]["subject"].dump()
+            if child_issuer != parent_subject:
+                raise ValueError(
+                    f"{self._labels()[i]} issuer does not match "
+                    f"{self._labels()[i + 1]} subject"
+                )
 
-        Raises:
-            ValueError: If chain validation fails
+        # Root must be self-signed
+        root = self.chain[-1]
+        root_issuer = root["tbs_certificate"]["issuer"].dump()
+        root_subject = root["tbs_certificate"]["subject"].dump()
+        if root_issuer != root_subject:
+            raise ValueError("Root certificate is not self-signed")
+
+    def _verify_basic_constraints_and_path_len(self) -> None:
+        """Ensure CA flags and pathLenConstraint are respected."""
+        leaf = self.chain[0]
+        leaf_bc = leaf.basic_constraints_value
+        if leaf_bc is not None and leaf_bc.native.get("ca"):
+            raise ValueError("Leaf certificate must not be a CA")
+
+        # CAs, ordered from closest-to-leaf to root; subordinate_cas is the
+        # count of CA certs between (exclusive) this cert and the leaf.
+        cas = self.chain[1:]
+        for depth, cert in enumerate(cas):
+            bc = cert.basic_constraints_value
+            if bc is None or not bc.native.get("ca"):
+                raise ValueError(
+                    f"{self._labels()[1 + depth]} certificate is not a valid CA "
+                    f"(missing or false BasicConstraints CA flag)"
+                )
+            path_len = bc.native.get("path_len_constraint")
+            if path_len is not None and depth > path_len:
+                raise ValueError(
+                    f"{self._labels()[1 + depth]} certificate violates its "
+                    f"pathLenConstraint of {path_len}"
+                )
+
+    def _verify_key_usage(self) -> None:
+        """Ensure key usage bits are appropriate for each cert's role."""
+        leaf = self.chain[0]
+        leaf_ku = leaf.key_usage_value
+        if leaf_ku is None or "digital_signature" not in leaf_ku.native:
+            raise ValueError("Leaf certificate missing digitalSignature key usage")
+
+        for label, cert in zip(self._labels()[1:], self.chain[1:]):
+            ku = cert.key_usage_value
+            if ku is None or "key_cert_sign" not in ku.native:
+                raise ValueError(f"{label} certificate missing keyCertSign key usage")
+
+    def _verify_signature_chain(self) -> None:
+        """Verify each certificate's signature against its issuer's public key.
+
+        The root's self-signature is not verified (trust in the root comes
+        from the pinned fingerprint, not from its own signature).
         """
-        try:
-            # Create validation context with trust roots and intermediates
-            context = ValidationContext(
-                trust_roots=[self.root_der],
-                other_certs=self.intermediates_der if self.intermediates else [],
-                moment=now,
-                allow_fetching=False
-            )
+        for i in range(len(self.chain) - 1):
+            child = self.chain[i]
+            parent_der = self.chain_der[i + 1]
+            label = self._labels()[i]
 
-            # Create validator with leaf certificate and validate
-            validator = CertificateValidator(
-                end_entity_cert=self.leaf_der,
-                intermediate_certs=None,
-                validation_context=context
-            )
+            if child.hash_algo != "sha384" or child.signature_algo != "ecdsa":
+                raise ValueError(
+                    f"{label} certificate uses unsupported signature algorithm: "
+                    f"{child.signature_algo}/{child.hash_algo}"
+                )
 
-            # Validate the chain (this will check dates, signatures, and build path)
-            # Use validate_usage with empty set to validate chain without specific key usage requirements
-            path = validator.validate_usage(
-                key_usage=set(),
-                extended_optional=True
-            )
+            parent_x509 = X509()
+            try:
+                parent_x509.parseBinary(parent_der)
+            except Exception as e:
+                raise ValueError(f"Failed to parse issuer of {label}: {e}")
 
-            if not path:
-                raise ValueError("Certificate chain validation returned empty path")
+            public_key = parent_x509.publicKey
+            if not isinstance(public_key, ECDSAKey):
+                raise ValueError(f"Issuer of {label} has non-ECDSA public key")
 
-        except ValueError:
-            raise
-        except Exception as e:
-            raise ValueError(f"Certificate chain validation failed: {e}")
+            tbs_bytes = child["tbs_certificate"].dump()
+            signature_der = child.signature  # already DER-encoded for ECDSA certs
 
-    @property
-    def intermediates_der(self) -> List[bytes]:
-        """Get intermediate certificates as DER bytes."""
-        return self.cabundle_der[1:] if len(self.cabundle_der) > 1 else []
+            try:
+                valid = public_key.hashAndVerify(signature_der, tbs_bytes, hAlg="sha384")
+            except Exception as e:
+                raise ValueError(f"Signature verification failed for {label}: {e}")
+
+            if not valid:
+                raise ValueError(f"Invalid signature on {label} certificate")
+
+    def _labels(self) -> List[str]:
+        n_intermediates = len(self.chain) - 2
+        return (
+            ["leaf"]
+            + [f"intermediate[{n_intermediates - 1 - i}]" for i in range(n_intermediates)]
+            + ["root"]
+        )
 
     def get_leaf_certificate(self):
-        """Get parsed leaf certificate (tlslite-ng X509 object)."""
-        return self.leaf_cert
+        """Get parsed leaf certificate (tlslite-ng X509 object) for signature verification."""
+        x509_leaf = X509()
+        x509_leaf.parseBinary(self.leaf_der)
+        return x509_leaf
 
     def get_leaf_certificate_der(self) -> bytes:
         """Get DER-encoded leaf certificate."""
